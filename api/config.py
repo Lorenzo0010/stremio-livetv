@@ -17,6 +17,7 @@ USER_AGENT = os.getenv(
 DEFAULT_IPTV_URLS: list[str] = [
     "https://raw.githubusercontent.com/maginetweb-arch/TVITALIA/refs/heads/main/iptvit.m3u",
     "https://raw.githubusercontent.com/Free-TV/IPTV/refs/heads/master/playlists/playlist_italy.m3u8",
+    "https://github.com/Tundrak/IPTV-Italia/raw/main/iptvitaplus.m3u",
 ]
 
 _env_iptv = os.getenv("IPTV_URLS", "")
