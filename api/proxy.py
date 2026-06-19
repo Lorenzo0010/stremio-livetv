@@ -6,6 +6,7 @@ Permette di:
   - Riscrivere manifest M3U8 (master e media playlist)
   - Proxiare segmenti .ts, chiavi AES, sub-playlist
   - Passare header custom via ?headers=<base64-JSON>
+  - Seguire redirect del relinker RAI (risposta video/mp4 → URL HLS reale)
 """
 
 import base64
@@ -41,6 +42,9 @@ _M3U8_CONTENT_TYPES = {
     "audio/x-mpegurl",
 }
 
+# Regex relinker RAI — l'URL viene risolto in un MP4 o HLS a seconda dell'UA
+_RAI_RELINKER_RE = re.compile(r'relinker\.rai\.it|mediapolis\.rai\.it|relinkerServlet', re.IGNORECASE)
+
 
 def get_client() -> httpx.AsyncClient:
     global _client
@@ -60,13 +64,15 @@ def _decode_headers_param(h: str | None) -> dict:
     if not h:
         return {}
     try:
-        return json.loads(base64.b64decode(h + "==").decode("utf-8"))
+        padded = h + "==" if len(h) % 4 else h
+        return json.loads(base64.b64decode(padded).decode("utf-8"))
     except Exception:
         return {}
 
 
 def _build_headers(custom: dict) -> dict:
-    return {**_DEFAULT_HEADERS, **custom}
+    merged = {**_DEFAULT_HEADERS, **custom}
+    return merged
 
 
 def _is_m3u8(content_type: str, body: str) -> bool:
@@ -114,6 +120,42 @@ def encode_headers_b64(headers: dict) -> str:
     return base64.b64encode(json.dumps(headers).encode()).decode().rstrip("=")
 
 
+async def _resolve_rai_relinker(url: str, headers: dict, client: httpx.AsyncClient) -> str:
+    """
+    Il relinker RAI risponde con redirect o con payload video/mp4.
+    Segue i redirect finché non trova un URL HLS (.m3u8) o restituisce
+    l'URL finale (anche se MP4, Stremio lo gestisce).
+    """
+    try:
+        # Prima richiesta con follow_redirects=False per catturare la Location
+        resp = await client.get(url, headers=headers, follow_redirects=False)
+        hops = 0
+        while resp.status_code in (301, 302, 303, 307, 308) and hops < 10:
+            location = resp.headers.get("location", "")
+            if not location:
+                break
+            logger.debug(f"[relinker] redirect → {location[:100]}")
+            resp = await client.get(location, headers=headers, follow_redirects=False)
+            hops += 1
+
+        # URL finale: se è un redirect con Location, usalo
+        final_url = str(resp.url)
+        ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+
+        # Se la risposta è un M3U8, è già il manifest — restituiamo l'URL finale
+        if _is_m3u8(ct, "") or ".m3u8" in final_url:
+            logger.info(f"[relinker] risolto HLS → {final_url[:100]}")
+            return final_url
+
+        # video/mp4 o altro — restituiamo l'URL finale (Stremio può gestire MP4)
+        logger.info(f"[relinker] risolto {ct} → {final_url[:100]}")
+        return final_url
+
+    except Exception as e:
+        logger.error(f"[relinker] errore risoluzione {url[:80]}: {e}")
+        return url  # fallback: URL originale
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.head("/manifest.m3u8")
@@ -127,14 +169,30 @@ async def proxy_manifest(url: str, request: Request, headers: str | None = None)
     if not url:
         raise HTTPException(400, "Parametro 'url' mancante")
     client = get_client()
-    eff = _build_headers(_decode_headers_param(headers))
+    custom = _decode_headers_param(headers)
+    eff = _build_headers(custom)
+
+    # ── RAI relinker: risolvi prima l'URL reale ──────────────────────────────
+    if _RAI_RELINKER_RE.search(url):
+        url = await _resolve_rai_relinker(url, eff, client)
+        # Aggiorna headers_b64 con quelli corretti per i segmenti downstream
+        if not headers:
+            headers = encode_headers_b64(custom) if custom else None
+
     try:
         resp = await client.get(url, headers=eff)
         if resp.status_code != 200:
-            raise HTTPException(resp.status_code, "Upstream error")
-        rewritten = _rewrite_manifest(resp.text, url, _proxy_base(request), headers)
-        return Response(rewritten, media_type="application/vnd.apple.mpegurl",
-                        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+            logger.warning(f"[proxy manifest] upstream {resp.status_code} per {url[:80]}")
+            raise HTTPException(resp.status_code, f"Upstream {resp.status_code}")
+        ct = resp.headers.get("content-type", "")
+        body = resp.text
+        if _is_m3u8(ct, body):
+            rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
+            return Response(rewritten, media_type="application/vnd.apple.mpegurl",
+                            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+        # Risposta non-M3U8 (es. MP4 diretto dopo relinker)
+        return Response(resp.content, media_type=ct,
+                        headers={"Access-Control-Allow-Origin": "*"})
     except httpx.RequestError as e:
         logger.error(f"[proxy] manifest error: {e}")
         raise HTTPException(502, "Upstream non raggiungibile")

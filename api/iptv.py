@@ -3,12 +3,10 @@ iptv.py — Parser M3U/M3U8 e gestore canali live.
 
 Fix applicati analizzando le playlist reali:
   1. Attributi M3U senza spazio tra di loro (es. tvg-id="X"tvg-logo="Y")
-     — il regex precedente li gestiva correttamente, ma il formato
-       group-title="Rai":http-user-agent=... rompe il parse del group.
-       Fix: tronca il valore all'eventuale \":\"
   2. Righe #KODIPROP (DRM Widevine) — non devono consumare current{}
   3. Stream .mpd (MPEG-DASH) — non supportati da Stremio nativo, scartati
-  4. http-user-agent in EXTINF — estratto e salvato per uso futuro
+  4. http-user-agent in EXTINF — estratto e usato per header custom
+  5. Rilevamento automatico provider (RAI / Mediaset) per header injection
 """
 
 import asyncio
@@ -32,6 +30,78 @@ _SKIP_PREFIXES = (
     "#EXTHTTP",
 )
 
+# ── Rilevamento provider ───────────────────────────────────────────────────────
+
+_RAI_RELINKER = re.compile(r'relinker\.rai\.it|mediapolis\.rai\.it|relinkerServlet', re.IGNORECASE)
+_RAI_CDN      = re.compile(r'rai-simulcast\.akamaized\.net|akamaized\.net.*[Rr]ai|raiplay', re.IGNORECASE)
+_MEDIASET_CDN = re.compile(r'mediaset|msf\.cdn|live.*mediaset|mediasetplay', re.IGNORECASE)
+_LA7_CDN      = re.compile(r'la7\.it|d1chghleocc9sm\.cloudfront|la7stream', re.IGNORECASE)
+_SKY_CDN      = re.compile(r'skycdn|skytg24|skygo\.sky\.it|skytv', re.IGNORECASE)
+
+# User-Agent HbbTV usato da RAI per i relinker
+_UA_HBBTV  = "HbbTV/1.6.1 (+DL+DH;Samsung;SmartTV2018;T-HKMFDEUC-1252.2302.1;1/;v3.3"
+_UA_MOBILE = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
+_UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+
+def detect_provider(url: str, user_agent_hint: str = "") -> str:
+    """Rileva il provider dallo stream URL o dallo user-agent del tag EXTINF."""
+    if _RAI_RELINKER.search(url):
+        return "rai_relinker"
+    if _RAI_CDN.search(url):
+        return "rai_cdn"
+    if _MEDIASET_CDN.search(url):
+        return "mediaset"
+    if _LA7_CDN.search(url):
+        return "la7"
+    if _SKY_CDN.search(url):
+        return "sky"
+    # Fallback: controlla UA dal tag EXTINF
+    if user_agent_hint and "hbbtv" in user_agent_hint.lower():
+        return "rai_relinker"
+    return "generic"
+
+
+def get_provider_headers(provider: str) -> dict:
+    """
+    Restituisce gli header HTTP necessari per il provider rilevato.
+    Questi vengono passati al proxy come headers=<base64-JSON>.
+    """
+    if provider == "rai_relinker":
+        return {
+            "User-Agent": _UA_HBBTV,
+            "Referer": "https://www.raiplay.it/",
+            "Origin": "https://www.raiplay.it",
+            "Accept": "application/x-mpegurl, application/vnd.apple.mpegurl, */*",
+        }
+    if provider == "rai_cdn":
+        return {
+            "User-Agent": _UA_HBBTV,
+            "Referer": "https://www.rai.it/",
+            "Origin": "https://www.rai.it",
+        }
+    if provider == "mediaset":
+        return {
+            "User-Agent": _UA_DESKTOP,
+            "Referer": "https://mediasetplay.mediaset.it/",
+            "Origin": "https://mediasetplay.mediaset.it",
+            "Accept": "application/x-mpegurl, */*",
+        }
+    if provider == "la7":
+        return {
+            "User-Agent": _UA_DESKTOP,
+            "Referer": "https://www.la7.it/",
+            "Origin": "https://www.la7.it",
+        }
+    if provider == "sky":
+        return {
+            "User-Agent": _UA_DESKTOP,
+            "Referer": "https://www.skytg24.it/",
+            "Origin": "https://www.skytg24.it",
+        }
+    # generic: usa User-Agent desktop standard
+    return {"User-Agent": _UA_DESKTOP}
+
 
 # ── Download ────────────────────────────────────────────────────────────────
 
@@ -48,21 +118,12 @@ async def _fetch_m3u(url: str, session: aiohttp.ClientSession) -> str:
 # ── Parser ────────────────────────────────────────────────────────────────────
 
 def _attr(line: str, name: str) -> str:
-    """
-    Estrae il valore di un attributo dalla riga #EXTINF.
-    Gestisce attributi con e senza spazio tra di loro:
-      tvg-id="Rai1.it"tvg-logo="..."
-      tvg-id="Rai1.it" tvg-logo="..."
-    Tronca il valore al primo \":\" non-URL per gestire:
-      group-title="Rai":http-user-agent="HbbTV"
-    """
     m = re.search(
         rf'(?:^|\s){re.escape(name)}=["\']?([^"\' >]+)["\']?',
         line,
         re.IGNORECASE,
     )
     if not m:
-        # fallback: senza spazio prima (es. tvg-id="X"tvg-logo=)
         m = re.search(
             rf'{re.escape(name)}="([^"]+)"',
             line,
@@ -71,7 +132,6 @@ def _attr(line: str, name: str) -> str:
     if not m:
         return ""
     val = m.group(1)
-    # Tronca group-title="Rai":http-user-agent=... → "Rai"
     if name.lower() == "group-title" and ":" in val and not val.startswith("http"):
         val = val.split(":")[0]
     return val.strip('"\'')
@@ -93,7 +153,6 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
         if not line:
             continue
 
-        # Tag da ignorare senza toccare current
         if any(line.startswith(p) for p in _SKIP_PREFIXES):
             continue
 
@@ -102,9 +161,8 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
             tvg_name = _attr(line, "tvg-name")
             logo     = _attr(line, "tvg-logo") or _attr(line, "logo")
             group    = _attr(line, "group-title") or "Generale"
-            ua       = _attr(line, "http-user-agent")  # salvato ma non usato ora
+            ua       = _attr(line, "http-user-agent")
 
-            # Nome canale = testo dopo l'ultima virgola
             comma = line.rfind(",")
             name  = line[comma + 1:].strip() if comma != -1 else (tvg_name or "Canale")
 
@@ -118,14 +176,15 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
             }
 
         elif line.startswith("#"):
-            continue  # altri tag M3U, ignora
+            continue
 
         elif current:
-            # Scarta stream MPEG-DASH (.mpd) — non supportati da Stremio nativo
             if line.lower().endswith(".mpd") or ".mpd?" in line.lower():
                 skipped_dash += 1
                 current = {}
                 continue
+
+            provider = detect_provider(line, current.get("user_agent", ""))
 
             ch_id = current["tvg_id"] if current["tvg_id"] else _slugify(current["name"])
             channels.append({
@@ -136,6 +195,7 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
                 "stream_url": line,
                 "source":     current["source"],
                 "user_agent": current.get("user_agent", ""),
+                "provider":   provider,
             })
             current = {}
 
@@ -165,6 +225,7 @@ async def get_all_channels(iptv_urls: list[str]) -> list[dict]:
     all_channels: list[dict] = []
     seen: set[str] = set()
 
+    provider_stats: dict[str, int] = {}
     for url, content in zip(iptv_urls, results):
         if not content:
             continue
@@ -173,8 +234,12 @@ async def get_all_channels(iptv_urls: list[str]) -> list[dict]:
             if ch["id"] not in seen:
                 seen.add(ch["id"])
                 all_channels.append(ch)
+                p = ch.get("provider", "generic")
+                provider_stats[p] = provider_stats.get(p, 0) + 1
 
     logger.info(f"📺 Canali totali caricati: {len(all_channels)}")
+    for p, n in sorted(provider_stats.items()):
+        logger.info(f"   ├─ {p}: {n} canali")
     _cache[cache_key] = (all_channels, time.time())
     return all_channels
 

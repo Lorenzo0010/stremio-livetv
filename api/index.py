@@ -17,6 +17,7 @@ Endpoint utilità:
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,8 +28,12 @@ from .config import (
     IPTV_URLS, IPTV_PAGE_SIZE,
     validate_config,
 )
-from .iptv import get_all_channels, get_channel_by_id, get_channels_page, get_groups, invalidate_cache
-from .proxy import router as proxy_router, close_proxy_client
+from .iptv import (
+    get_all_channels, get_channel_by_id, get_channels_page,
+    get_groups, invalidate_cache,
+    get_provider_headers, detect_provider,
+)
+from .proxy import router as proxy_router, close_proxy_client, encode_headers_b64
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -121,7 +126,7 @@ def _ch_to_meta(ch: dict) -> dict:
         "background":  ch["logo"] or ADDON_LOGO,
         "logo":        ch["logo"] or ADDON_LOGO,
         "genres":      [ch["group"]],
-        "description": f"{ch['group']} · {ch['source']}",
+        "description": f"{ch['group']} · {ch['source']} · {ch.get('provider', 'generic')}",
     }
 
 
@@ -142,6 +147,19 @@ async def catalog_tv_genre(genre: str, skip: int = Query(0, ge=0)):
 
 # ── Stream ────────────────────────────────────────────────────────────────────
 
+def _build_proxy_url(base: str, stream_url: str, provider_headers: dict) -> str:
+    """
+    Costruisce l'URL proxy con gli header corretti per il provider.
+    I header vengono codificati in base64 e passati come parametro.
+    """
+    enc_url = quote(stream_url, safe="")
+    if provider_headers:
+        h_b64 = encode_headers_b64(provider_headers)
+        h_param = quote(h_b64, safe="")
+        return f"{base}/proxy/manifest.m3u8?url={enc_url}&headers={h_param}"
+    return f"{base}/proxy/manifest.m3u8?url={enc_url}"
+
+
 @app.get("/stream/tv/{id}.json")
 async def stream_tv(id: str, request: Request):
     ch = await get_channel_by_id(IPTV_URLS, id)
@@ -150,20 +168,35 @@ async def stream_tv(id: str, request: Request):
 
     stream_url = ch["stream_url"]
     base = str(request.base_url).rstrip("/")
+    provider = ch.get("provider") or detect_provider(stream_url, ch.get("user_agent", ""))
+    p_headers = get_provider_headers(provider)
 
-    # Se lo stream è HLS (.m3u8), lo passiamo attraverso il proxy interno
-    # per garantire compatibilità CORS e riscrittura header
-    from urllib.parse import quote
-    if ".m3u8" in stream_url or stream_url.endswith(".m3u"):
-        proxied_url = f"{base}/proxy/manifest.m3u8?url={quote(stream_url, safe='')}"
+    # Log per debug
+    logger.debug(f"[stream] {ch['name']} | provider={provider} | url={stream_url[:80]}")
+
+    # Tutti gli stream HLS passano dal proxy con gli header corretti
+    if ".m3u8" in stream_url or stream_url.endswith(".m3u") or "relinker" in stream_url.lower():
+        proxied_url = _build_proxy_url(base, stream_url, p_headers)
     else:
-        proxied_url = stream_url  # stream diretto (RTMP, HTTP TS, ecc.)
+        # Stream diretti (RTMP, TS HTTP) — passa ugualmente gli header se presenti
+        proxied_url = stream_url
+
+    title_provider = {
+        "rai_relinker": "RAI",
+        "rai_cdn": "RAI CDN",
+        "mediaset": "Mediaset",
+        "la7": "LA7",
+        "sky": "Sky",
+        "generic": "",
+    }.get(provider, provider)
+
+    title_suffix = f" [{title_provider}]" if title_provider else ""
 
     return _json({
         "streams": [{
             "url":   proxied_url,
             "name":  ch["name"],
-            "title": f"📺 {ch['name']}\n{ch['group']} · {ch['source']}",
+            "title": f"📺 {ch['name']}{title_suffix}\n{ch['group']} · {ch['source']}",
             "behaviorHints": {
                 "notWebReady": False,
                 "bingeGroup":  f"iptv-{ch['group']}",
