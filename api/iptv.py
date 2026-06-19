@@ -31,16 +31,17 @@ _SKIP_PREFIXES = (
     "#EXTHTTP",
 )
 
-# ── Rilevamento provider ───────────────────────────────────────────────────────
+# ── Rilevamento provider ───────────────────────────────────────────────────────────────────
 
 _RAI_RELINKER = re.compile(r'relinker\.rai\.it|mediapolis\.rai\.it|relinkerServlet', re.IGNORECASE)
 _RAI_CDN      = re.compile(r'rai-simulcast\.akamaized\.net|akamaized\.net.*[Rr]ai|raiplay', re.IGNORECASE)
 _RAI_RADIO    = re.compile(r'radio\.rai\.it|icestreaming\.rai\.it|radio[0-9]?\.rai', re.IGNORECASE)
 _MEDIASET_CDN = re.compile(r'mediaset|msf\.cdn|live.*mediaset|mediasetplay', re.IGNORECASE)
-# La7: CDN Akamai con path /la7/, CloudFront dedicato, dominio diretto
+# La7: CDN Akamai con path /la7/, CloudFront dedicati (La7 e La7d), dominio diretto
 _LA7_CDN      = re.compile(
     r'la7\.it|d1chghleocc9sm\.cloudfront|la7stream|'
-    r'akamaized\.net.*/la7|la7d\.akamaized',
+    r'akamaized\.net.*/la7|la7d\.akamaized|'
+    r'd3749synfikwkv\.cloudfront|d15umi5iaezxgx\.cloudfront',
     re.IGNORECASE,
 )
 # Sky: skycdn, SkyGO, TG24, NOW TV (now.sky.it, nowtv.it, skyshowtime)
@@ -53,10 +54,13 @@ _SKY_CDN      = re.compile(
 # DAZN — CDN Akamai/AWS dedicati
 _DAZN_CDN     = re.compile(r'dazn\.com|daznservices|dazn-.*\.akamaized', re.IGNORECASE)
 # Discovery / Warner / Eurosport / Real Time / NOVE / DMAX / Focus
+# Aggiunto: amagi.tv (CDN usato da Warner Bros. Discovery Italia per
+# NOVE, Giallo, Real Time, K2, Food Network, Warner TV, Frisbee)
 _DISCOVERY_CDN = re.compile(
     r'discoveryplus|dplay\.com|eurosportplayer|'
     r'nove\.tv|novetv|dmax\.it|realtime\.it|'
-    r'warnermedia|discoverychannelgo|hbomax',
+    r'warnermedia|discoverychannelgo|hbomax|'
+    r'amagi\.tv|playouts\.now\.amagi',
     re.IGNORECASE,
 )
 # Tv8 / Nove (Gruppo Sky Italia)
@@ -166,7 +170,7 @@ def get_provider_headers(provider: str) -> dict:
     return {"User-Agent": _UA_DESKTOP}
 
 
-# ── Download ────────────────────────────────────────────────────────────────
+# ── Download ──────────────────────────────────────────────────────────────────────
 
 async def _fetch_m3u(url: str, session: aiohttp.ClientSession) -> str:
     try:
@@ -178,7 +182,7 @@ async def _fetch_m3u(url: str, session: aiohttp.ClientSession) -> str:
         return ""
 
 
-# ── Parser ────────────────────────────────────────────────────────────────────
+# ── Parser ──────────────────────────────────────────────────────────────────────────
 
 def _attr(line: str, name: str) -> str:
     m = re.search(
@@ -270,7 +274,7 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
     return channels
 
 
-# ── Cache + caricamento ───────────────────────────────────────────────────────
+# ── Cache + caricamento ───────────────────────────────────────────────────────────────────
 
 async def get_all_channels(iptv_urls: list[str]) -> list[dict]:
     """Scarica, parsa e deduplica i canali da tutte le sorgenti. Usa la cache."""
@@ -307,7 +311,7 @@ async def get_all_channels(iptv_urls: list[str]) -> list[dict]:
     return all_channels
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────────────
 
 async def get_channels_page(
     iptv_urls: list[str],
