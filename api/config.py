@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 ADDON_NAME = "Live TV Italia"
 ADDON_ID   = "org.stremio.livetv.italia"
 ADDON_VERSION = "1.0.0"
-ADDON_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/0/03/Flag_of_Italy.svg/320px-Flag_of_Italy.svg.png"
+ADDON_LOGO = "https://static.vecteezy.com/system/resources/thumbnails/037/297/656/small/tv-icon-3d-render-free-png.png"
 
 USER_AGENT = os.getenv(
     "USER_AGENT",
