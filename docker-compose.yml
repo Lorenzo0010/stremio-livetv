@@ -1,0 +1,12 @@
+services:
+  stremio-livetv:
+    build: .
+    container_name: stremio-livetv
+    restart: unless-stopped
+    ports:
+      - "7878:7878"
+    environment:
+      - PORT=7878
+      - IPTV_URLS=
+      - IPTV_PAGE_SIZE=100
+      - CACHE_TTL=3600
