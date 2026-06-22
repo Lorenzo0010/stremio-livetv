@@ -14,6 +14,7 @@ Endpoint utilità:
   GET /groups        — lista gruppi disponibili
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -25,7 +26,7 @@ from fastapi.responses import JSONResponse
 
 from .config import (
     ADDON_ID, ADDON_NAME, ADDON_VERSION, ADDON_LOGO,
-    IPTV_URLS, IPTV_PAGE_SIZE,
+    IPTV_URLS, IPTV_PAGE_SIZE, CACHE_TTL,
     validate_config,
 )
 from .iptv import (
@@ -39,15 +40,40 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+async def _background_cache_refresh():
+    """
+    Task in background: ogni CACHE_TTL secondi invalida la cache
+    e pre-carica i canali da tutte le sorgenti, senza aspettare richieste utente.
+    """
+    while True:
+        await asyncio.sleep(CACHE_TTL)
+        logger.info("🔄 Background refresh cache avviato...")
+        try:
+            invalidate_cache()
+            ch = await get_all_channels(IPTV_URLS)
+            logger.info(f"✅ Background refresh completato: {len(ch)} canali")
+        except Exception as e:
+            logger.warning(f"⚠️  Background refresh fallito: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_config()
+    # Pre-caricamento iniziale
     try:
         ch = await get_all_channels(IPTV_URLS)
         logger.info(f"📺 Pre-caricati {len(ch)} canali")
     except Exception as e:
         logger.warning(f"⚠️  Pre-caricamento fallito: {e}")
+    # Avvia il task di refresh automatico in background
+    refresh_task = asyncio.create_task(_background_cache_refresh())
+    logger.info(f"⏱  Background cache refresh avviato (ogni {CACHE_TTL}s)")
     yield
+    refresh_task.cancel()
+    try:
+        await refresh_task
+    except asyncio.CancelledError:
+        pass
     await close_proxy_client()
     logger.info("🔌 Sessioni HTTP chiuse")
 
