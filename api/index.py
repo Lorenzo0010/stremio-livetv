@@ -17,6 +17,7 @@ Endpoint utilità:
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 from urllib.parse import quote
@@ -152,13 +153,39 @@ def _ch_to_meta(ch: dict) -> dict:
     }
 
 
+_SEP = re.compile(r"[\s\-_\.]+")
+
+def _normalize(text: str) -> str:
+    """Rimuove spazi, trattini, underscore e punti per il confronto fuzzy.
+    Es: 'Rai 1' -> 'rai1', 'TG 24' -> 'tg24', 'Italia-1' -> 'italia1'
+    """
+    return _SEP.sub("", text.lower())
+
+
 def _search_channels(channels: list[dict], query: str) -> list[dict]:
-    """Filtra i canali per nome con ricerca case-insensitive e supporto parziale."""
-    q = query.lower().strip()
-    if not q:
+    """
+    Ricerca canali con doppio confronto:
+    1. Testo originale (case-insensitive) — per match precisi con spazi
+    2. Testo normalizzato (senza separatori) — per match tipo rai1 -> Rai 1
+    Priorita': match che iniziano con la query > match che la contengono.
+    """
+    q_raw  = query.lower().strip()
+    q_norm = _normalize(query)
+    if not q_raw:
         return channels
-    starts   = [c for c in channels if c["name"].lower().startswith(q)]
-    contains = [c for c in channels if q in c["name"].lower() and not c["name"].lower().startswith(q)]
+
+    def _matches(name: str) -> bool:
+        n_raw  = name.lower()
+        n_norm = _normalize(name)
+        return q_raw in n_raw or q_norm in n_norm
+
+    def _starts(name: str) -> bool:
+        n_raw  = name.lower()
+        n_norm = _normalize(name)
+        return n_raw.startswith(q_raw) or n_norm.startswith(q_norm)
+
+    starts   = [c for c in channels if _starts(c["name"])]
+    contains = [c for c in channels if _matches(c["name"]) and not _starts(c["name"])]
     return starts + contains
 
 
