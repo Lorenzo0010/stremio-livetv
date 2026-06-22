@@ -4,6 +4,7 @@ index.py — FastAPI app principale per stremio-livetv.
 Endpoint Stremio:
   GET /manifest.json
   GET /catalog/tv/livetv.json?genre=...&skip=...&search=...
+  GET /catalog/tv/livetv/search={query}.json   <- ricerca Stremio (path param)
   GET /catalog/tv/livetv/genre={genre}.json
   GET /stream/tv/{id}.json
   GET /meta/tv/{id}.json
@@ -41,10 +42,6 @@ logger = logging.getLogger(__name__)
 
 
 async def _background_cache_refresh():
-    """
-    Task in background: ogni CACHE_TTL secondi invalida la cache
-    e pre-carica i canali da tutte le sorgenti, senza aspettare richieste utente.
-    """
     while True:
         await asyncio.sleep(CACHE_TTL)
         logger.info("🔄 Background refresh cache avviato...")
@@ -160,8 +157,7 @@ def _search_channels(channels: list[dict], query: str) -> list[dict]:
     q = query.lower().strip()
     if not q:
         return channels
-    # Ordina: prima i match che iniziano con la query, poi i match che la contengono
-    starts = [c for c in channels if c["name"].lower().startswith(q)]
+    starts   = [c for c in channels if c["name"].lower().startswith(q)]
     contains = [c for c in channels if q in c["name"].lower() and not c["name"].lower().startswith(q)]
     return starts + contains
 
@@ -173,13 +169,24 @@ async def catalog_tv(
     search: Optional[str] = Query(None),
 ):
     if search:
-        # In modalità ricerca: nessun filtro genre, nessuna paginazione, max 100 risultati
         all_ch = await get_all_channels(IPTV_URLS)
         results = _search_channels(all_ch, search)
         logger.info(f"🔍 Ricerca '{search}': {len(results)} risultati")
         return _json({"metas": [_ch_to_meta(c) for c in results[:100]]})
     channels = await get_channels_page(IPTV_URLS, group=genre, skip=skip, limit=IPTV_PAGE_SIZE)
     return _json({"metas": [_ch_to_meta(c) for c in channels]})
+
+
+@app.get("/catalog/tv/livetv/search={query}.json")
+async def catalog_tv_search(query: str):
+    """
+    Route per la ricerca Stremio: il client invia la query come path parameter
+    nel formato /catalog/tv/{catalogId}/search={query}.json
+    """
+    all_ch = await get_all_channels(IPTV_URLS)
+    results = _search_channels(all_ch, query)
+    logger.info(f"🔍 Ricerca (path) '{query}': {len(results)} risultati")
+    return _json({"metas": [_ch_to_meta(c) for c in results[:100]]})
 
 
 @app.get("/catalog/tv/livetv/genre={genre}.json")
