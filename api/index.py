@@ -3,7 +3,7 @@ index.py — FastAPI app principale per stremio-livetv.
 
 Endpoint Stremio:
   GET /manifest.json
-  GET /catalog/tv/livetv.json?genre=...&skip=...
+  GET /catalog/tv/livetv.json?genre=...&skip=...&search=...
   GET /catalog/tv/livetv/genre={genre}.json
   GET /stream/tv/{id}.json
   GET /meta/tv/{id}.json
@@ -59,13 +59,11 @@ async def _background_cache_refresh():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_config()
-    # Pre-caricamento iniziale
     try:
         ch = await get_all_channels(IPTV_URLS)
         logger.info(f"📺 Pre-caricati {len(ch)} canali")
     except Exception as e:
         logger.warning(f"⚠️  Pre-caricamento fallito: {e}")
-    # Avvia il task di refresh automatico in background
     refresh_task = asyncio.create_task(_background_cache_refresh())
     logger.info(f"⏱  Background cache refresh avviato (ogni {CACHE_TTL}s)")
     yield
@@ -132,8 +130,9 @@ async def manifest():
                 "id":    "livetv",
                 "name":  "📺 Live TV Italia",
                 "extra": [
-                    {"name": "genre", "isRequired": False},
-                    {"name": "skip",  "isRequired": False},
+                    {"name": "search", "isRequired": False},
+                    {"name": "genre",  "isRequired": False},
+                    {"name": "skip",   "isRequired": False},
                 ],
             }
         ],
@@ -156,11 +155,29 @@ def _ch_to_meta(ch: dict) -> dict:
     }
 
 
+def _search_channels(channels: list[dict], query: str) -> list[dict]:
+    """Filtra i canali per nome con ricerca case-insensitive e supporto parziale."""
+    q = query.lower().strip()
+    if not q:
+        return channels
+    # Ordina: prima i match che iniziano con la query, poi i match che la contengono
+    starts = [c for c in channels if c["name"].lower().startswith(q)]
+    contains = [c for c in channels if q in c["name"].lower() and not c["name"].lower().startswith(q)]
+    return starts + contains
+
+
 @app.get("/catalog/tv/livetv.json")
 async def catalog_tv(
-    genre: Optional[str] = Query(None),
-    skip:  int           = Query(0, ge=0),
+    genre:  Optional[str] = Query(None),
+    skip:   int           = Query(0, ge=0),
+    search: Optional[str] = Query(None),
 ):
+    if search:
+        # In modalità ricerca: nessun filtro genre, nessuna paginazione, max 100 risultati
+        all_ch = await get_all_channels(IPTV_URLS)
+        results = _search_channels(all_ch, search)
+        logger.info(f"🔍 Ricerca '{search}': {len(results)} risultati")
+        return _json({"metas": [_ch_to_meta(c) for c in results[:100]]})
     channels = await get_channels_page(IPTV_URLS, group=genre, skip=skip, limit=IPTV_PAGE_SIZE)
     return _json({"metas": [_ch_to_meta(c) for c in channels]})
 
@@ -174,10 +191,6 @@ async def catalog_tv_genre(genre: str, skip: int = Query(0, ge=0)):
 # ── Stream ────────────────────────────────────────────────────────────────────
 
 def _build_proxy_url(base: str, stream_url: str, provider_headers: dict) -> str:
-    """
-    Costruisce l'URL proxy con gli header corretti per il provider.
-    I header vengono codificati in base64 e passati come parametro.
-    """
     enc_url = quote(stream_url, safe="")
     if provider_headers:
         h_b64 = encode_headers_b64(provider_headers)
@@ -197,14 +210,11 @@ async def stream_tv(id: str, request: Request):
     provider = ch.get("provider") or detect_provider(stream_url, ch.get("user_agent", ""))
     p_headers = get_provider_headers(provider)
 
-    # Log per debug
     logger.debug(f"[stream] {ch['name']} | provider={provider} | url={stream_url[:80]}")
 
-    # Tutti gli stream HLS passano dal proxy con gli header corretti
     if ".m3u8" in stream_url or stream_url.endswith(".m3u") or "relinker" in stream_url.lower():
         proxied_url = _build_proxy_url(base, stream_url, p_headers)
     else:
-        # Stream diretti (RTMP, TS HTTP) — passa ugualmente gli header se presenti
         proxied_url = stream_url
 
     title_provider = {
