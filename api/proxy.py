@@ -196,7 +196,12 @@ async def proxy_manifest(url: str, request: Request, headers: str | None = None)
                 rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
                 await resp.aclose()
                 return Response(rewritten, media_type="application/vnd.apple.mpegurl",
-                                headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+                                headers={
+                                    "Access-Control-Allow-Origin": "*",
+                                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                                    "Pragma": "no-cache",
+                                    "Expires": "0"
+                                })
 
         # Stream direct MP4 or other non-manifest
         async def _stream():
@@ -243,7 +248,12 @@ async def proxy_segment(url: str, request: Request, headers: str | None = None):
                 rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
                 await resp.aclose()
                 return Response(rewritten, media_type="application/vnd.apple.mpegurl",
-                                headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+                                headers={
+                                    "Access-Control-Allow-Origin": "*",
+                                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                                    "Pragma": "no-cache",
+                                    "Expires": "0"
+                                })
 
         async def _stream():
             try:
