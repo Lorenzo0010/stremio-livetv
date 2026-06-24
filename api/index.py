@@ -3,11 +3,11 @@ index.py — FastAPI app principale per stremio-livetv.
 
 Endpoint Stremio:
   GET /manifest.json
-  GET /catalog/tv/livetv.json?genre=...&skip=...&search=...
-  GET /catalog/tv/livetv/search={query}.json   <- ricerca Stremio (path param)
-  GET /catalog/tv/livetv/genre={genre}.json
-  GET /stream/tv/{id}.json
-  GET /meta/tv/{id}.json
+  GET /catalog/channel/livetv.json?genre=...&skip=...&search=...
+  GET /catalog/channel/livetv/search={query}.json   <- ricerca Stremio (path param)
+  GET /catalog/channel/livetv/genre={genre}.json
+  GET /stream/channel/{id}.json
+  GET /meta/channel/{id}.json
 
 Endpoint utilità:
   GET /              — landing page
@@ -229,10 +229,10 @@ async def manifest():
         "description": "Live TV italiana da sorgenti IPTV M3U/M3U8 con proxy HLS interno",
         "logo":        ADDON_LOGO,
         "resources":   ["stream", "meta", "catalog"],
-        "types":       ["tv"],
+        "types":       ["channel"],
         "catalogs": [
             {
-                "type":  "tv",
+                "type":  "channel",
                 "id":    "livetv",
                 "name":  "📺 Live TV Italia",
                 "extra": [
@@ -251,7 +251,7 @@ async def manifest():
 def _ch_to_meta(ch: dict) -> dict:
     return {
         "id":          ch["id"],
-        "type":        "tv",
+        "type":        "channel",
         "name":        ch["name"],
         "poster":      ch["logo"] or ADDON_LOGO,
         "background":  ch["logo"] or ADDON_LOGO,
@@ -297,7 +297,7 @@ def _search_channels(channels: list[dict], query: str) -> list[dict]:
     return starts + contains
 
 
-@app.get("/catalog/tv/livetv.json")
+@app.get("/catalog/channel/livetv.json")
 async def catalog_tv(
     genre:  Optional[str] = Query(None),
     skip:   int           = Query(0, ge=0),
@@ -312,11 +312,11 @@ async def catalog_tv(
     return _json({"metas": [_ch_to_meta(c) for c in channels]})
 
 
-@app.get("/catalog/tv/livetv/search={query}.json")
+@app.get("/catalog/channel/livetv/search={query}.json")
 async def catalog_tv_search(query: str):
     """
     Route per la ricerca Stremio: il client invia la query come path parameter
-    nel formato /catalog/tv/{catalogId}/search={query}.json
+    nel formato /catalog/channel/{catalogId}/search={query}.json
     """
     all_ch = await get_all_channels(IPTV_URLS)
     results = _search_channels(all_ch, query)
@@ -324,7 +324,7 @@ async def catalog_tv_search(query: str):
     return _json({"metas": [_ch_to_meta(c) for c in results[:100]]})
 
 
-@app.get("/catalog/tv/livetv/genre={genre}.json")
+@app.get("/catalog/channel/livetv/genre={genre}.json")
 async def catalog_tv_genre(genre: str, skip: int = Query(0, ge=0)):
     channels = await get_channels_page(IPTV_URLS, group=genre, skip=skip, limit=IPTV_PAGE_SIZE)
     return _json({"metas": [_ch_to_meta(c) for c in channels]})
@@ -341,7 +341,7 @@ def _build_proxy_url(base: str, stream_url: str, provider_headers: dict) -> str:
     return f"{base}/proxy/manifest.m3u8?url={enc_url}"
 
 
-@app.get("/stream/tv/{id}.json")
+@app.get("/stream/channel/{id}.json")
 async def stream_tv(id: str, request: Request):
     ch = await get_channel_by_id(IPTV_URLS, id)
     if ch is None:
@@ -385,7 +385,7 @@ async def stream_tv(id: str, request: Request):
 
 # ── Meta ──────────────────────────────────────────────────────────────────────
 
-@app.get("/meta/tv/{id}.json")
+@app.get("/meta/channel/{id}.json")
 async def meta_tv(id: str):
     ch = await get_channel_by_id(IPTV_URLS, id)
     if ch is None:
