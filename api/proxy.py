@@ -172,27 +172,49 @@ async def proxy_manifest(url: str, request: Request, headers: str | None = None)
     custom = _decode_headers_param(headers)
     eff = _build_headers(custom)
 
-    # ── RAI relinker: risolvi prima l'URL reale ──────────────────────────────
     if _RAI_RELINKER_RE.search(url):
         url = await _resolve_rai_relinker(url, eff, client)
-        # Aggiorna headers_b64 con quelli corretti per i segmenti downstream
         if not headers:
             headers = encode_headers_b64(custom) if custom else None
 
     try:
-        resp = await client.get(url, headers=eff)
+        req = client.build_request("GET", url, headers=eff)
+        resp = await client.send(req, stream=True)
         if resp.status_code != 200:
+            await resp.aclose()
             logger.warning(f"[proxy manifest] upstream {resp.status_code} per {url[:80]}")
             raise HTTPException(resp.status_code, f"Upstream {resp.status_code}")
+            
         ct = resp.headers.get("content-type", "")
-        body = resp.text
-        if _is_m3u8(ct, body):
-            rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
-            return Response(rewritten, media_type="application/vnd.apple.mpegurl",
-                            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
-        # Risposta non-M3U8 (es. MP4 diretto dopo relinker)
-        return Response(resp.content, media_type=ct,
-                        headers={"Access-Control-Allow-Origin": "*"})
+        ct_lower = ct.split(";")[0].strip().lower()
+        is_m3u8 = ct_lower in _M3U8_CONTENT_TYPES or ".m3u8" in url.lower()
+
+        if is_m3u8:
+            await resp.aread()
+            body = resp.text
+            if body.lstrip().startswith("#EXTM3U") or ct_lower in _M3U8_CONTENT_TYPES:
+                rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
+                await resp.aclose()
+                return Response(rewritten, media_type="application/vnd.apple.mpegurl",
+                                headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+
+        # Stream direct MP4 or other non-manifest
+        async def _stream():
+            try:
+                if hasattr(resp, '_content'):
+                    yield resp.content
+                else:
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        yield chunk
+            finally:
+                await resp.aclose()
+
+        resp_headers = {"Access-Control-Allow-Origin": "*"}
+        if "content-length" in resp.headers:
+            resp_headers["Content-Length"] = resp.headers["content-length"]
+            
+        return StreamingResponse(_stream(), status_code=resp.status_code, media_type=ct,
+                                 headers=resp_headers)
     except httpx.RequestError as e:
         logger.error(f"[proxy] manifest error: {e}")
         raise HTTPException(502, "Upstream non raggiungibile")
@@ -205,19 +227,40 @@ async def proxy_segment(url: str, request: Request, headers: str | None = None):
     client = get_client()
     eff = _build_headers(_decode_headers_param(headers))
     try:
-        resp = await client.get(url, headers=eff)
+        req = client.build_request("GET", url, headers=eff)
+        resp = await client.send(req, stream=True)
         if resp.status_code not in (200, 206):
+            await resp.aclose()
             raise HTTPException(resp.status_code, "Upstream error")
+            
         ct = resp.headers.get("content-type", "video/MP2T")
-        body = resp.text
-        if _is_m3u8(ct, body):
-            rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
-            return Response(rewritten, media_type="application/vnd.apple.mpegurl",
-                            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+        ct_lower = ct.split(";")[0].strip().lower()
+        
+        if ct_lower in _M3U8_CONTENT_TYPES or ".m3u8" in url.lower():
+            await resp.aread()
+            body = resp.text
+            if body.lstrip().startswith("#EXTM3U") or ct_lower in _M3U8_CONTENT_TYPES:
+                rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
+                await resp.aclose()
+                return Response(rewritten, media_type="application/vnd.apple.mpegurl",
+                                headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+
         async def _stream():
-            yield resp.content
+            try:
+                if hasattr(resp, '_content'):
+                    yield resp.content
+                else:
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        yield chunk
+            finally:
+                await resp.aclose()
+                
+        resp_headers = {"Access-Control-Allow-Origin": "*"}
+        if "content-length" in resp.headers:
+            resp_headers["Content-Length"] = resp.headers["content-length"]
+            
         return StreamingResponse(_stream(), status_code=resp.status_code, media_type=ct,
-                                  headers={"Access-Control-Allow-Origin": "*"})
+                                  headers=resp_headers)
     except httpx.RequestError as e:
         logger.error(f"[proxy] segment error: {e}")
         raise HTTPException(502, "Upstream non raggiungibile")
