@@ -233,17 +233,41 @@ async def proxy_segment(url: str, request: Request, headers: str | None = None):
     client = get_client()
     eff = _build_headers(_decode_headers_param(headers))
     try:
-        resp = await client.get(url, headers=eff)
+        req = client.build_request("GET", url, headers=eff)
+        resp = await client.send(req, stream=True)
+        
         if resp.status_code not in (200, 206):
+            await resp.aclose()
             raise HTTPException(resp.status_code, "Upstream error")
+            
         ct = resp.headers.get("content-type", "video/MP2T")
-        body = resp.text
-        if _is_m3u8(ct, body):
+        
+        # Peek the first chunk to detect if it's actually M3U8 hidden behind a generic content-type
+        iterator = resp.aiter_bytes(chunk_size=65536)
+        try:
+            first_chunk = await iterator.__anext__()
+        except StopAsyncIteration:
+            first_chunk = b""
+            
+        if _is_m3u8(ct, first_chunk.decode("utf-8", errors="ignore")):
+            rest_chunks = [first_chunk]
+            async for chunk in iterator:
+                rest_chunks.append(chunk)
+            body = b"".join(rest_chunks).decode("utf-8", errors="replace")
             rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
+            await resp.aclose()
             return Response(rewritten, media_type="application/vnd.apple.mpegurl",
                             headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+
         async def _stream():
-            yield resp.content
+            try:
+                if first_chunk:
+                    yield first_chunk
+                async for chunk in iterator:
+                    yield chunk
+            finally:
+                await resp.aclose()
+                
         return StreamingResponse(_stream(), status_code=resp.status_code, media_type=ct,
                                   headers={"Access-Control-Allow-Origin": "*"})
     except httpx.RequestError as e:

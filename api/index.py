@@ -34,7 +34,7 @@ from .config import (
 from .iptv import (
     get_all_channels, get_channel_by_id, get_channels_page,
     get_groups, invalidate_cache,
-    get_provider_headers, detect_provider,
+    get_provider_headers, detect_provider, _normalize
 )
 from .proxy import router as proxy_router, close_proxy_client, encode_headers_b64
 
@@ -47,8 +47,7 @@ async def _background_cache_refresh():
         await asyncio.sleep(CACHE_TTL)
         logger.info("🔄 Background refresh cache avviato...")
         try:
-            invalidate_cache()
-            ch = await get_all_channels(IPTV_URLS)
+            ch = await get_all_channels(IPTV_URLS, force_refresh=True)
             logger.info(f"✅ Background refresh completato: {len(ch)} canali")
         except Exception as e:
             logger.warning(f"⚠️  Background refresh fallito: {e}")
@@ -213,8 +212,7 @@ async def groups_list():
 
 @app.get("/cache/reload")
 async def cache_reload():
-    invalidate_cache()
-    ch = await get_all_channels(IPTV_URLS)
+    ch = await get_all_channels(IPTV_URLS, force_refresh=True)
     return _json({"status": "ok", "channels": len(ch)})
 
 
@@ -261,15 +259,6 @@ def _ch_to_meta(ch: dict) -> dict:
     }
 
 
-_SEP = re.compile(r"[\s\-_\.]+")
-
-def _normalize(text: str) -> str:
-    """Rimuove spazi, trattini, underscore e punti per il confronto fuzzy.
-    Es: 'Rai 1' -> 'rai1', 'TG 24' -> 'tg24', 'Italia-1' -> 'italia1'
-    """
-    return _SEP.sub("", text.lower())
-
-
 def _search_channels(channels: list[dict], query: str) -> list[dict]:
     """
     Ricerca canali con doppio confronto:
@@ -282,18 +271,18 @@ def _search_channels(channels: list[dict], query: str) -> list[dict]:
     if not q_raw:
         return channels
 
-    def _matches(name: str) -> bool:
-        n_raw  = name.lower()
-        n_norm = _normalize(name)
+    def _matches(c: dict) -> bool:
+        n_raw  = c["name"].lower()
+        n_norm = c["name_norm"]
         return q_raw in n_raw or q_norm in n_norm
 
-    def _starts(name: str) -> bool:
-        n_raw  = name.lower()
-        n_norm = _normalize(name)
+    def _starts(c: dict) -> bool:
+        n_raw  = c["name"].lower()
+        n_norm = c["name_norm"]
         return n_raw.startswith(q_raw) or n_norm.startswith(q_norm)
 
-    starts   = [c for c in channels if _starts(c["name"])]
-    contains = [c for c in channels if _matches(c["name"]) and not _starts(c["name"])]
+    starts   = [c for c in channels if _starts(c)]
+    contains = [c for c in channels if _matches(c) and not _starts(c)]
     return starts + contains
 
 

@@ -16,7 +16,7 @@ import re
 import time
 from typing import Optional
 
-import aiohttp
+import httpx
 
 from .config import CACHE_TTL, USER_AGENT
 
@@ -30,6 +30,22 @@ _SKIP_PREFIXES = (
     "#EXTVLCOPT",
     "#EXTHTTP",
 )
+
+# ── Normalizzazione e Pre-compilazione Regex ────────────────────────────────────────────────
+_SEP = re.compile(r"[\s\-_\.]+")
+
+def _normalize(text: str) -> str:
+    """Rimuove spazi, trattini, underscore e punti per il confronto fuzzy.
+    Es: 'Rai 1' -> 'rai1', 'TG 24' -> 'tg24', 'Italia-1' -> 'italia1'
+    """
+    return _SEP.sub("", text.lower())
+
+_ATTR_RE_NO_SPACE = {}
+_ATTR_RE_QUOTED = {}
+for _name in ["tvg-id", "tvg-name", "tvg-logo", "logo", "group-title", "http-user-agent"]:
+    _ATTR_RE_NO_SPACE[_name] = re.compile(rf'(?:^|\s){re.escape(_name)}=["\']?([^"\'\ >]+)["\']?', re.IGNORECASE)
+    _ATTR_RE_QUOTED[_name] = re.compile(rf'{re.escape(_name)}="([^"]+)"', re.IGNORECASE)
+
 
 # ── Rilevamento provider ───────────────────────────────────────────────────────────────────
 
@@ -172,11 +188,11 @@ def get_provider_headers(provider: str) -> dict:
 
 # ── Download ──────────────────────────────────────────────────────────────────────
 
-async def _fetch_m3u(url: str, session: aiohttp.ClientSession) -> str:
+async def _fetch_m3u(url: str, session: httpx.AsyncClient) -> str:
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            resp.raise_for_status()
-            return await resp.text(encoding="utf-8", errors="replace")
+        resp = await session.get(url, timeout=20.0, follow_redirects=True)
+        resp.raise_for_status()
+        return resp.read().decode("utf-8", errors="replace")
     except Exception as e:
         logger.warning(f"⚠️  Impossibile scaricare {url}: {e}")
         return ""
@@ -185,17 +201,9 @@ async def _fetch_m3u(url: str, session: aiohttp.ClientSession) -> str:
 # ── Parser ──────────────────────────────────────────────────────────────────────────
 
 def _attr(line: str, name: str) -> str:
-    m = re.search(
-        rf'(?:^|\s){re.escape(name)}=["\']?([^"\'\ >]+)["\']?',
-        line,
-        re.IGNORECASE,
-    )
+    m = _ATTR_RE_NO_SPACE[name].search(line)
     if not m:
-        m = re.search(
-            rf'{re.escape(name)}="([^"]+)"',
-            line,
-            re.IGNORECASE,
-        )
+        m = _ATTR_RE_QUOTED[name].search(line)
     if not m:
         return ""
     val = m.group(1)
@@ -232,10 +240,12 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
 
             comma = line.rfind(",")
             name  = line[comma + 1:].strip() if comma != -1 else (tvg_name or "Canale")
+            final_name = name or tvg_name or "Canale"
 
             current = {
                 "tvg_id":     tvg_id,
-                "name":       name or tvg_name or "Canale",
+                "name":       final_name,
+                "name_norm":  _normalize(final_name),
                 "logo":       logo,
                 "group":      group,
                 "source":     source_label,
@@ -257,6 +267,7 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
             channels.append({
                 "id":         f"iptv:{ch_id}",
                 "name":       current["name"],
+                "name_norm":  current["name_norm"],
                 "logo":       current["logo"],
                 "group":      current["group"],
                 "stream_url": line,
@@ -276,17 +287,17 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
 
 # ── Cache + caricamento ───────────────────────────────────────────────────────────────────
 
-async def get_all_channels(iptv_urls: list[str]) -> list[dict]:
+async def get_all_channels(iptv_urls: list[str], force_refresh: bool = False) -> list[dict]:
     """Scarica, parsa e deduplica i canali da tutte le sorgenti. Usa la cache."""
     cache_key = "|".join(sorted(iptv_urls))
-    if cache_key in _cache:
+    if not force_refresh and cache_key in _cache:
         cached, ts = _cache[cache_key]
         if time.time() - ts < CACHE_TTL:
             logger.debug(f"Cache hit — {len(cached)} canali")
             return cached
 
     headers = {"User-Agent": USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with httpx.AsyncClient(headers=headers, timeout=20.0, follow_redirects=True) as session:
         results = await asyncio.gather(*[_fetch_m3u(u, session) for u in iptv_urls])
 
     all_channels: list[dict] = []
@@ -307,6 +318,8 @@ async def get_all_channels(iptv_urls: list[str]) -> list[dict]:
     logger.info(f"📺 Canali totali caricati: {len(all_channels)}")
     for p, n in sorted(provider_stats.items()):
         logger.info(f"   ├─ {p}: {n} canali")
+    
+    # Aggiornamento cache atomico
     _cache[cache_key] = (all_channels, time.time())
     return all_channels
 
@@ -342,3 +355,4 @@ async def get_groups(iptv_urls: list[str]) -> list[str]:
 def invalidate_cache() -> None:
     _cache.clear()
     logger.info("🗑️  Cache IPTV invalidata")
+
