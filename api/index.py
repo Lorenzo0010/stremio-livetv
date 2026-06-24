@@ -36,7 +36,7 @@ from .iptv import (
     get_groups, invalidate_cache,
     get_provider_headers, detect_provider,
 )
-from .proxy import router as proxy_router, close_proxy_client, encode_headers_b64, proxy_metrics
+from .proxy import router as proxy_router, close_proxy_client, encode_headers_b64
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -95,34 +95,6 @@ def _json(data: Any) -> JSONResponse:
 async def root(request: Request):
     base = str(request.base_url).rstrip("/")
     manifest_url = f"{base}/manifest.json"
-    
-    provider_html = ""
-    if not proxy_metrics.stats:
-        provider_html = "<div class='provider-row'><span style='color: #ccc;'>Nessuna richiesta effettuata finora.</span></div>"
-    else:
-        for provider, data in sorted(proxy_metrics.stats.items()):
-            total = data["total"]
-            success = data["success"]
-            if total == 0:
-                continue
-            perc = (success / total) * 100
-            
-            if perc >= 80:
-                led_class = "green"
-            elif perc >= 50:
-                led_class = "yellow"
-            else:
-                led_class = "red"
-                
-            provider_html += f'''
-            <div class="provider-row">
-                <div style="display: flex; align-items: center;">
-                    <span class="led {led_class}"></span>
-                    <span class="provider-name">{provider}</span>
-                </div>
-                <span class="provider-stats">{perc:.1f}% ({success}/{total})</span>
-            </div>
-            '''
 
     html = f"""
 <!DOCTYPE html>
@@ -179,7 +151,6 @@ async def root(request: Request):
             border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 8px;
             padding: 10px;
-            margin-bottom: 30px;
         }}
         .copy-box input {{
             flex: 1;
@@ -203,56 +174,6 @@ async def root(request: Request):
         .copy-box button:hover {{
             background: #45a049;
         }}
-        .status-container {{
-            text-align: left;
-            margin-top: 20px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 8px;
-            padding: 20px;
-        }}
-        .status-container h3 {{
-            margin-top: 0;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            padding-bottom: 10px;
-        }}
-        .provider-row {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }}
-        .provider-row:last-child {{
-            border-bottom: none;
-        }}
-        .led {{
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 10px;
-        }}
-        .led.green {{
-            background-color: #00ff00;
-            box-shadow: 0 0 8px #00ff00;
-        }}
-        .led.red {{
-            background-color: #ff0000;
-            box-shadow: 0 0 8px #ff0000;
-        }}
-        .led.yellow {{
-            background-color: #ffcc00;
-            box-shadow: 0 0 8px #ffcc00;
-        }}
-        .provider-name {{
-            flex: 1;
-            font-weight: bold;
-            text-transform: capitalize;
-        }}
-        .provider-stats {{
-            font-family: monospace;
-            font-size: 1.1em;
-        }}
     </style>
 </head>
 <body>
@@ -264,13 +185,6 @@ async def root(request: Request):
         <div class="copy-box">
             <input type="text" id="manifestUrl" value="{manifest_url}" readonly>
             <button onclick="copyManifest()">Copia Link</button>
-        </div>
-
-        <div class="status-container">
-            <h3>Stato Provider (Proxy Stats)</h3>
-            <div id="provider-list">
-                {provider_html}
-            </div>
         </div>
     </div>
 
