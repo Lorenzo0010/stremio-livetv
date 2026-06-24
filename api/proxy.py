@@ -20,10 +20,24 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from .config import USER_AGENT
+from .iptv import detect_provider
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/proxy", tags=["proxy"])
+
+class ProxyMetrics:
+    def __init__(self):
+        self.stats = defaultdict(lambda: {"success": 0, "total": 0})
+    
+    def record(self, url: str, success: bool):
+        provider = detect_provider(url)
+        self.stats[provider]["total"] += 1
+        if success:
+            self.stats[provider]["success"] += 1
+
+proxy_metrics = ProxyMetrics()
 
 _DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -182,8 +196,11 @@ async def proxy_manifest(url: str, request: Request, headers: str | None = None)
     try:
         resp = await client.get(url, headers=eff)
         if resp.status_code != 200:
+            proxy_metrics.record(url, False)
             logger.warning(f"[proxy manifest] upstream {resp.status_code} per {url[:80]}")
             raise HTTPException(resp.status_code, f"Upstream {resp.status_code}")
+        
+        proxy_metrics.record(url, True)
         ct = resp.headers.get("content-type", "")
         body = resp.text
         if _is_m3u8(ct, body):
@@ -194,6 +211,7 @@ async def proxy_manifest(url: str, request: Request, headers: str | None = None)
         return Response(resp.content, media_type=ct,
                         headers={"Access-Control-Allow-Origin": "*"})
     except httpx.RequestError as e:
+        proxy_metrics.record(url, False)
         logger.error(f"[proxy] manifest error: {e}")
         raise HTTPException(502, "Upstream non raggiungibile")
 
@@ -207,7 +225,10 @@ async def proxy_segment(url: str, request: Request, headers: str | None = None):
     try:
         resp = await client.get(url, headers=eff)
         if resp.status_code not in (200, 206):
+            proxy_metrics.record(url, False)
             raise HTTPException(resp.status_code, "Upstream error")
+        
+        proxy_metrics.record(url, True)
         ct = resp.headers.get("content-type", "video/MP2T")
         body = resp.text
         if _is_m3u8(ct, body):
@@ -219,5 +240,6 @@ async def proxy_segment(url: str, request: Request, headers: str | None = None):
         return StreamingResponse(_stream(), status_code=resp.status_code, media_type=ct,
                                   headers={"Access-Control-Allow-Origin": "*"})
     except httpx.RequestError as e:
+        proxy_metrics.record(url, False)
         logger.error(f"[proxy] segment error: {e}")
         raise HTTPException(502, "Upstream non raggiungibile")

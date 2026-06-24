@@ -24,7 +24,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 from .config import (
     ADDON_ID, ADDON_NAME, ADDON_VERSION, ADDON_LOGO,
@@ -36,7 +36,7 @@ from .iptv import (
     get_groups, invalidate_cache,
     get_provider_headers, detect_provider,
 )
-from .proxy import router as proxy_router, close_proxy_client, encode_headers_b64
+from .proxy import router as proxy_router, close_proxy_client, encode_headers_b64, proxy_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -94,8 +94,202 @@ def _json(data: Any) -> JSONResponse:
 @app.get("/")
 async def root(request: Request):
     base = str(request.base_url).rstrip("/")
-    return _json({"status": "online", "addon": ADDON_NAME,
-                  "version": ADDON_VERSION, "manifest": f"{base}/manifest.json"})
+    manifest_url = f"{base}/manifest.json"
+    
+    provider_html = ""
+    if not proxy_metrics.stats:
+        provider_html = "<div class='provider-row'><span style='color: #ccc;'>Nessuna richiesta effettuata finora.</span></div>"
+    else:
+        for provider, data in sorted(proxy_metrics.stats.items()):
+            total = data["total"]
+            success = data["success"]
+            if total == 0:
+                continue
+            perc = (success / total) * 100
+            
+            if perc >= 80:
+                led_class = "green"
+            elif perc >= 50:
+                led_class = "yellow"
+            else:
+                led_class = "red"
+                
+            provider_html += f'''
+            <div class="provider-row">
+                <div style="display: flex; align-items: center;">
+                    <span class="led {led_class}"></span>
+                    <span class="provider-name">{provider}</span>
+                </div>
+                <span class="provider-stats">{perc:.1f}% ({success}/{total})</span>
+            </div>
+            '''
+
+    html = f"""
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{ADDON_NAME} - Stremio Addon</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }}
+        .container {{
+            margin-top: 10vh;
+            text-align: center;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            backdrop-filter: blur(10px);
+            width: 90%;
+            max-width: 600px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }}
+        .logo {{
+            width: 120px;
+            height: 120px;
+            margin-bottom: 20px;
+            border-radius: 20%;
+            object-fit: cover;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }}
+        h1 {{
+            margin: 0 0 10px 0;
+            font-size: 2.5em;
+        }}
+        p.subtitle {{
+            font-size: 1.1em;
+            color: #ccc;
+            margin-bottom: 30px;
+        }}
+        .copy-box {{
+            display: flex;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 30px;
+        }}
+        .copy-box input {{
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-size: 1em;
+            outline: none;
+            padding: 5px;
+        }}
+        .copy-box button {{
+            background: #4caf50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }}
+        .copy-box button:hover {{
+            background: #45a049;
+        }}
+        .status-container {{
+            text-align: left;
+            margin-top: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 20px;
+        }}
+        .status-container h3 {{
+            margin-top: 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 10px;
+        }}
+        .provider-row {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }}
+        .provider-row:last-child {{
+            border-bottom: none;
+        }}
+        .led {{
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 10px;
+        }}
+        .led.green {{
+            background-color: #00ff00;
+            box-shadow: 0 0 8px #00ff00;
+        }}
+        .led.red {{
+            background-color: #ff0000;
+            box-shadow: 0 0 8px #ff0000;
+        }}
+        .led.yellow {{
+            background-color: #ffcc00;
+            box-shadow: 0 0 8px #ffcc00;
+        }}
+        .provider-name {{
+            flex: 1;
+            font-weight: bold;
+            text-transform: capitalize;
+        }}
+        .provider-stats {{
+            font-family: monospace;
+            font-size: 1.1em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img src="{ADDON_LOGO}" alt="Logo" class="logo">
+        <h1>{ADDON_NAME}</h1>
+        <p class="subtitle">v{ADDON_VERSION} - Live TV italiana per Stremio</p>
+        
+        <div class="copy-box">
+            <input type="text" id="manifestUrl" value="{manifest_url}" readonly>
+            <button onclick="copyManifest()">Copia Link</button>
+        </div>
+
+        <div class="status-container">
+            <h3>Stato Provider (Proxy Stats)</h3>
+            <div id="provider-list">
+                {provider_html}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function copyManifest() {{
+            var copyText = document.getElementById("manifestUrl");
+            copyText.select();
+            copyText.setSelectionRange(0, 99999);
+            navigator.clipboard.writeText(copyText.value).then(() => {{
+                alert("Link copiato negli appunti: " + copyText.value);
+            }}).catch(err => {{
+                console.error("Errore durante la copia", err);
+            }});
+        }}
+    </script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
 
 
 @app.get("/groups")
