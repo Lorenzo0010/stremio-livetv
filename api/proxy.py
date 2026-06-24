@@ -7,6 +7,11 @@ Permette di:
   - Proxiare segmenti .ts, chiavi AES, sub-playlist
   - Passare header custom via ?headers=<base64-JSON>
   - Seguire redirect del relinker RAI (risposta video/mp4 → URL HLS reale)
+
+Fix live timer:
+  - Rimuove #EXT-X-PROGRAM-DATE-TIME (causa calcolo durata assoluta in Stremio/VLC)
+  - Rimuove #EXT-X-PLAYLIST-TYPE:VOD (forza modalità live)
+  - Rimuove #EXT-X-ENDLIST (non inviare mai fine stream)
 """
 
 import base64
@@ -44,6 +49,15 @@ _M3U8_CONTENT_TYPES = {
 
 # Regex relinker RAI — l'URL viene risolto in un MP4 o HLS a seconda dell'UA
 _RAI_RELINKER_RE = re.compile(r'relinker\.rai\.it|mediapolis\.rai\.it|relinkerServlet', re.IGNORECASE)
+
+# Tag da rimuovere completamente perché causano il calcolo di una durata assoluta
+# in Stremio/VLC che porta al blocco a ~3 ore sul live
+_STRIP_TAGS_RE = re.compile(
+    r'^#EXT-X-PROGRAM-DATE-TIME'     # timeline assoluta → VLC calcola durata totale
+    r'|^#EXT-X-PLAYLIST-TYPE:VOD'    # forza modalità VOD
+    r'|^#EXT-X-ENDLIST',             # segnala fine stream → non deve mai arrivare al client
+    re.IGNORECASE
+)
 
 
 def get_client() -> httpx.AsyncClient:
@@ -88,12 +102,24 @@ def _proxy_base(request: Request) -> str:
     return str(request.base_url).rstrip("/") + "/proxy"
 
 
+def _is_master_playlist(content: str) -> bool:
+    """Restituisce True se il manifest è un master playlist (contiene stream variant)."""
+    return bool(re.search(r'^#EXT-X-STREAM-INF', content, re.MULTILINE))
+
+
 def _rewrite_manifest(content: str, original_url: str, proxy_base: str, headers_b64: str | None = None) -> str:
     """
     Riscrive tutti gli URL in un manifest M3U8 sostituendoli con URL proxy.
     Gestisce: righe URL, URI=\"...\" in #EXT-X-KEY, #EXT-X-MAP, #EXT-X-MEDIA.
+
+    Per le media playlist (non master) rimuove i tag che causano il blocco
+    a ~3 ore in Stremio/VLC:
+      - #EXT-X-PROGRAM-DATE-TIME  (VLC somma i timestamp assoluti come durata)
+      - #EXT-X-PLAYLIST-TYPE:VOD  (forza modalità VOD bloccando gli aggiornamenti)
+      - #EXT-X-ENDLIST            (segnala fine stream, mai da inviare su live)
     """
     h_param = f"&headers={quote(headers_b64, safe='')}" if headers_b64 else ""
+    is_master = _is_master_playlist(content)
 
     def proxify(raw: str) -> str:
         abs_url = _make_absolute(raw, original_url)
@@ -107,12 +133,20 @@ def _rewrite_manifest(content: str, original_url: str, proxy_base: str, headers_
         s = line.strip()
         if not s:
             out.append(line)
-        elif s.startswith("#"):
+            continue
+
+        if s.startswith("#"):
+            # Sui media playlist rimuovi i tag che causano il blocco a 3h
+            if not is_master and _STRIP_TAGS_RE.match(s):
+                logger.debug(f"[m3u8] rimosso tag live-blocker: {s[:80]}")
+                continue
+            # Riscrivi URI=\"...\" dentro tag come #EXT-X-KEY, #EXT-X-MAP, #EXT-X-MEDIA
             if 'URI="' in s:
                 line = re.sub(r'URI="([^"]+)"', lambda m: f'URI="{proxify(m.group(1))}"', line)
             out.append(line)
         else:
             out.append(proxify(s) + "\n")
+
     return "".join(out)
 
 
@@ -127,7 +161,6 @@ async def _resolve_rai_relinker(url: str, headers: dict, client: httpx.AsyncClie
     l'URL finale (anche se MP4, Stremio lo gestisce).
     """
     try:
-        # Prima richiesta con follow_redirects=False per catturare la Location
         resp = await client.get(url, headers=headers, follow_redirects=False)
         hops = 0
         while resp.status_code in (301, 302, 303, 307, 308) and hops < 10:
@@ -138,22 +171,19 @@ async def _resolve_rai_relinker(url: str, headers: dict, client: httpx.AsyncClie
             resp = await client.get(location, headers=headers, follow_redirects=False)
             hops += 1
 
-        # URL finale: se è un redirect con Location, usalo
         final_url = str(resp.url)
         ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
 
-        # Se la risposta è un M3U8, è già il manifest — restituiamo l'URL finale
         if _is_m3u8(ct, "") or ".m3u8" in final_url:
             logger.info(f"[relinker] risolto HLS → {final_url[:100]}")
             return final_url
 
-        # video/mp4 o altro — restituiamo l'URL finale (Stremio può gestire MP4)
         logger.info(f"[relinker] risolto {ct} → {final_url[:100]}")
         return final_url
 
     except Exception as e:
         logger.error(f"[relinker] errore risoluzione {url[:80]}: {e}")
-        return url  # fallback: URL originale
+        return url
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -175,7 +205,6 @@ async def proxy_manifest(url: str, request: Request, headers: str | None = None)
     # ── RAI relinker: risolvi prima l'URL reale ──────────────────────────────
     if _RAI_RELINKER_RE.search(url):
         url = await _resolve_rai_relinker(url, eff, client)
-        # Aggiorna headers_b64 con quelli corretti per i segmenti downstream
         if not headers:
             headers = encode_headers_b64(custom) if custom else None
 
@@ -190,7 +219,6 @@ async def proxy_manifest(url: str, request: Request, headers: str | None = None)
             rewritten = _rewrite_manifest(body, url, _proxy_base(request), headers)
             return Response(rewritten, media_type="application/vnd.apple.mpegurl",
                             headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
-        # Risposta non-M3U8 (es. MP4 diretto dopo relinker)
         return Response(resp.content, media_type=ct,
                         headers={"Access-Control-Allow-Origin": "*"})
     except httpx.RequestError as e:
