@@ -378,6 +378,7 @@ async def stream_tv(id: str, request: Request):
             "behaviorHints": {
                 "notWebReady": False,
                 "bingeGroup":  f"iptv-{ch['group']}",
+                "isLive": True,
             },
         }]
     })
