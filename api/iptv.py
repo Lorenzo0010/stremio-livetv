@@ -261,6 +261,14 @@ def _parse_m3u(content: str, source_label: str) -> list[dict]:
                 current = {}
                 continue
 
+            # Filtro per escludere eventuali canali per adulti
+            name_lower = current["name"].lower()
+            group_lower = current["group"].lower()
+            adult_keywords = ["xxx", "porn", "adult", "18+", "18 +", "hardcore", "playboy", "hustler", "vivid", "brazzers"]
+            if any(kw in name_lower or kw in group_lower for kw in adult_keywords):
+                current = {}
+                continue
+
             provider = detect_provider(line, current.get("user_agent", ""))
 
             ch_id = current["tvg_id"] if current["tvg_id"] else _slugify(current["name"])
