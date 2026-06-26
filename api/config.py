@@ -21,6 +21,9 @@ DEFAULT_IPTV_URLS: list[str] = [
     "https://github.com/Tundrak/IPTV-Italia/raw/main/iptvitaplus.m3u",
     # Sorgenti aggiuntive — copertura più ampia di canali italiani
     "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/it.m3u",
+    # Servizi FAST Legali (Pluto TV e Samsung TV Plus)
+    "https://i.mjh.nz/PlutoTV/it.m3u8",
+    "https://i.mjh.nz/SamsungTVPlus/it.m3u8",
 ]
 
 _env_iptv = os.getenv("IPTV_URLS", "")
