@@ -21,8 +21,6 @@ DEFAULT_IPTV_URLS: list[str] = [
     "https://github.com/Tundrak/IPTV-Italia/raw/main/iptvitaplus.m3u",
     # Sorgenti aggiuntive — copertura più ampia di canali italiani
     "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/it.m3u",
-    "https://raw.githubusercontent.com/Bora77/italian-iptv/main/italian-iptv.m3u",
-    "https://raw.githubusercontent.com/sq4rks/doGoodForIPTV/refs/heads/master/playlists/it.m3u",
 ]
 
 _env_iptv = os.getenv("IPTV_URLS", "")
