@@ -220,6 +220,7 @@ async def cache_reload():
 
 @app.get("/manifest.json")
 async def manifest():
+    groups = await get_groups(IPTV_URLS)
     return _json({
         "id":          ADDON_ID,
         "version":     ADDON_VERSION,
@@ -235,7 +236,11 @@ async def manifest():
                 "name":  "📺 Live TV Italia",
                 "extra": [
                     {"name": "search", "isRequired": False},
-                    {"name": "genre",  "isRequired": False},
+                    {
+                        "name": "genre",
+                        "isRequired": False,
+                        "options": ["Tutti"] + sorted(groups)
+                    },
                     {"name": "skip",   "isRequired": False},
                 ],
             }
