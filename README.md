@@ -2,14 +2,14 @@
 
 Addon Stremio per **Live TV italiana** via playlist IPTV M3U/M3U8.
 
-Scritto in **Python / FastAPI**, include un proxy HLS interno per aggirare problemi CORS e header sui flussi live, oltre a funzionalità avanzate di ricerca e rilevamento automatico dei provider.
+Scritto in **Python / FastAPI**, include un'integrazione nativa con **MediaFlow Proxy** per aggirare problemi CORS, risolvere token dinamici (es. Vavoo) e iniettare gli header HTTP corretti sui flussi live, oltre a funzionalità avanzate di ricerca e rilevamento automatico dei provider.
 
 ## Funzionalità
 
 - **Catalogo canali italiani** aggregati da multiple sorgenti M3U/M3U8 pubbliche e legali (inclusi Pluto TV e Samsung TV Plus).
 - **Filtro per gruppo/categoria** (RAI, Mediaset, News, Sport, ecc.) e paginazione del catalogo (`skip`).
 - **Ricerca canali avanzata** integrata nativamente in Stremio con fuzzy matching (es. `rai 1` vs `rai1`).
-- **Proxy HLS interno**: riscrittura manifest M3U8, segmenti `.ts`, e iniezione automatica degli header HTTP corretti identificando il provider di origine (Rai, Mediaset, La7, Sky, DAZN, Discovery, Tv8/Nove, ecc.).
+- **Integrazione MediaFlow Proxy**: le richieste di streaming vengono inoltrate automaticamente al tuo server MediaFlow Proxy, che si occupa di estrarre e mantenere vivi i flussi (inclusi quelli criptati o con token dinamici come Vavoo) iniettando gli header HTTP corretti (Rai, Mediaset, Sky, DAZN, ecc.).
 - **Cache in memoria e background refresh**: TTL configurabile (default 1h) con aggiornamento automatico in background per evitare rallentamenti all'utente.
 - **Pre-caricamento canali** all'avvio dell'applicazione.
 - **Filtro canali automatico**: esclusione di stream DASH (`.mpd` non supportati nativamente) e filtro parole chiave per contenuti adulti.
@@ -40,6 +40,8 @@ services:
       - IPTV_URLS=   # opzionale: URL aggiuntivi separati da virgola
       - IPTV_PAGE_SIZE=100
       - CACHE_TTL=3600
+      - MEDIAFLOW_PROXY_URL=http://127.0.0.1:8888
+      - MEDIAFLOW_PROXY_PASSWORD=
 ```
 
 ### Locale
@@ -68,6 +70,8 @@ O visita la landing page dell'addon dal tuo browser all'indirizzo `http://<tuo-i
 | `CACHE_TTL` | `3600` | Secondi di validità della cache canali |
 | `PORT` | `7878` | Porta di ascolto (se configurata diversamente nel container) |
 | `USER_AGENT` | *(desktop)* | User-Agent di base utilizzato nelle richieste HTTP |
+| `MEDIAFLOW_PROXY_URL` | `http://127.0.0.1:8888` | URL del tuo server MediaFlow Proxy |
+| `MEDIAFLOW_PROXY_PASSWORD` | *(vuoto)* | Password API del tuo MediaFlow Proxy |
 
 ## Struttura
 
@@ -75,7 +79,6 @@ O visita la landing page dell'addon dal tuo browser all'indirizzo `http://<tuo-i
 api/
   index.py      # FastAPI app, manifest, routes catalog/stream/meta, ricerca
   iptv.py       # Parser M3U, cache, filter provider, regex canali
-  proxy.py      # Proxy HLS interno (manifest + segmenti)
   config.py     # Configurazione e variabili d'ambiente
 Dockerfile
 requirements.txt
