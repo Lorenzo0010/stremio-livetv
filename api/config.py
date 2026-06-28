@@ -24,11 +24,6 @@ DEFAULT_IPTV_URLS: list[str] = [
     # Servizi FAST Legali (Pluto TV e Samsung TV Plus)
     "https://i.mjh.nz/PlutoTV/it.m3u8",
     "https://i.mjh.nz/SamsungTVPlus/it.m3u8",
-    # Vavoo (Lista di terze parti generata dalla community o proxy locale)
-    # Nota: inserisci qui il link della tua lista M3U Vavoo auto-aggiornante 
-    # generata tramite script come ddmfp o vavoo-iptv-stream-proxy.
-    # "http://127.0.0.1:8888/channels.m3u8?country=Italy", # Esempio proxy locale
-    "https://raw.githubusercontent.com/Mastaaa1987/vxparser/main/vavoo.m3u", # Esempio placeholder
 ]
 
 _env_iptv = os.getenv("IPTV_URLS", "")
@@ -41,10 +36,6 @@ IPTV_URLS: list[str] = (
 IPTV_PAGE_SIZE = int(os.getenv("IPTV_PAGE_SIZE", "100"))
 CACHE_TTL      = int(os.getenv("CACHE_TTL", "3600"))
 
-# ── MediaFlow Proxy ───────────────────────────────────────────────────────────
-MEDIAFLOW_PROXY_URL = os.getenv("MEDIAFLOW_PROXY_URL", "http://127.0.0.1:8888").rstrip("/")
-MEDIAFLOW_PROXY_PASSWORD = os.getenv("MEDIAFLOW_PROXY_PASSWORD", "")
-
 
 def validate_config() -> None:
     logger.info(f"✅ {ADDON_NAME} v{ADDON_VERSION} avviato")
@@ -52,4 +43,3 @@ def validate_config() -> None:
     for u in IPTV_URLS:
         logger.info(f"   → {u}")
     logger.info(f"⏱  Cache TTL: {CACHE_TTL}s  |  Page size: {IPTV_PAGE_SIZE}")
-    logger.info(f"🚀 MediaFlow Proxy: {MEDIAFLOW_PROXY_URL}")

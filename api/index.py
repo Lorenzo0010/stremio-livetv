@@ -29,7 +29,6 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from .config import (
     ADDON_ID, ADDON_NAME, ADDON_VERSION, ADDON_LOGO,
     IPTV_URLS, IPTV_PAGE_SIZE, CACHE_TTL,
-    MEDIAFLOW_PROXY_URL, MEDIAFLOW_PROXY_PASSWORD,
     validate_config,
 )
 from .iptv import (
@@ -37,6 +36,7 @@ from .iptv import (
     get_groups, invalidate_cache,
     get_provider_headers, detect_provider, _normalize
 )
+from .proxy import router as proxy_router, close_proxy_client, encode_headers_b64
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -69,7 +69,8 @@ async def lifespan(app: FastAPI):
         await refresh_task
     except asyncio.CancelledError:
         pass
-    logger.info("🔌 Applicazione chiusa")
+    await close_proxy_client()
+    logger.info("🔌 Sessioni HTTP chiuse")
 
 
 app = FastAPI(title=ADDON_NAME, lifespan=lifespan)
@@ -78,6 +79,7 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+app.include_router(proxy_router)
 
 
 def _json(data: Any) -> JSONResponse:
@@ -324,16 +326,13 @@ async def catalog_tv_genre(genre: str, skip: int = Query(0, ge=0)):
 
 # ── Stream ────────────────────────────────────────────────────────────────────
 
-def _build_proxy_url(stream_url: str, provider_headers: dict) -> str:
+def _build_proxy_url(base: str, stream_url: str, provider_headers: dict) -> str:
     enc_url = quote(stream_url, safe="")
-    params = [f"d={enc_url}"]
-    if MEDIAFLOW_PROXY_PASSWORD:
-        params.append(f"api_password={quote(MEDIAFLOW_PROXY_PASSWORD, safe='')}")
-    
-    for k, v in provider_headers.items():
-        params.append(f"h_{k}={quote(v, safe='')}")
-        
-    return f"{MEDIAFLOW_PROXY_URL}/proxy/stream?{'&'.join(params)}"
+    if provider_headers:
+        h_b64 = encode_headers_b64(provider_headers)
+        h_param = quote(h_b64, safe="")
+        return f"{base}/proxy/manifest.m3u8?url={enc_url}&headers={h_param}"
+    return f"{base}/proxy/manifest.m3u8?url={enc_url}"
 
 
 @app.get("/stream/channel/{id}.json")
@@ -350,10 +349,9 @@ async def stream_tv(id: str, request: Request):
     logger.debug(f"[stream] {ch['name']} | provider={provider} | url={stream_url[:80]}")
 
     if ".m3u8" in stream_url or stream_url.endswith(".m3u") or "relinker" in stream_url.lower():
-        proxied_url = _build_proxy_url(stream_url, p_headers)
+        proxied_url = _build_proxy_url(base, stream_url, p_headers)
     else:
-        # Se non è una playlist, forziamo comunque il passaggio da MediaFlow se vogliamo uniformità
-        proxied_url = _build_proxy_url(stream_url, p_headers)
+        proxied_url = stream_url
 
     title_provider = {
         "rai_relinker": "RAI",
